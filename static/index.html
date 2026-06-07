@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>Ark Clues Manager</title>
+<link rel="stylesheet" href="/static/styles.css">
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
+</head>
+<body x-data="app">
+
+<main>
+
+<div class="header-bar">
+  <h2>Ark Clues Manager</h2>
+  <div class="theme-toggle">
+    <select x-model="theme" @change="setTheme" class="theme-select">
+      <option value="auto">自动</option>
+      <option value="light">浅色</option>
+      <option value="dark">深色</option>
+    </select>
+  </div>
+</div>
+
+<nav class="tabs">
+  <button type="button" class="tab-btn" :class="{active: tab === 'record'}" @click="switchTab('record')">记录</button>
+  <button type="button" class="tab-btn" :class="{active: tab === 'advice'}" @click="switchTab('advice')">建议</button>
+  <button type="button" class="tab-btn" :class="{active: tab === 'history'}" @click="switchTab('history')">历史</button>
+</nav>
+
+<!-- ====== Tab: Record ====== -->
+<section x-show="tab === 'record'" x-cloak>
+<div class="input-card">
+  <form class="input-row" @submit.prevent="addRecord">
+    <div class="clue-bar">
+      <template x-for="n in 7" :key="n">
+        <div class="clue-bar-item" :class="{active: form.clues.includes(n)}" @click="toggleClue(n)">
+          <img :src="'/static/clue' + n + '.webp'" class="clue-img clue-img-pick"
+               @error="e => e.target.replaceWith(n)" :alt="n">
+        </div>
+      </template>
+    </div>
+
+    <div class="autocomplete-wrap">
+      <input x-model="form.name" placeholder="玩家名 (拼音/首字母)" autocomplete="off" required
+             @input.debounce.150ms="autocomplete"
+             @focus="autocomplete"
+             @blur="setTimeout(() => acOpen = false, 150)"
+             @keydown.escape="acOpen = false">
+      <button type="button" class="search-clear" x-show="form.name" @click="form.name = ''; acOpen = false">&times;</button>
+      <div class="autocomplete-dropdown" x-show="acOpen" x-transition.opacity.scale.origin.top>
+        <div x-show="acLoading" class="ac-loading"><span class="spinner"></span></div>
+        <template x-for="n in acNames" :key="typeof n === 'string' ? n : n.name">
+          <div @click="pickPlayer(n)" style="display:flex;justify-content:space-between">
+            <span x-text="typeof n === 'string' ? n : n.name"></span>
+            <small class="color-muted" x-show="typeof n !== 'string'" x-text="n.score.toFixed(2)"></small>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <label class="check-label"><input type="checkbox" x-model="form.wasNew"> 补缺</label>
+    <div x-data="datePicker({initDays: 0})" @date-change="form.time = $event.detail"></div>
+    <div class="type-actions">
+      <button type="button" class="type-btn send" @click="submitRecord('+')">收到</button>
+      <button type="button" class="type-btn recv" @click="submitRecord('-')">送出</button>
+    </div>
+  </form>
+</div>
+
+<div class="input-card">
+  <div class="input-row">
+    <span class="color-muted shrink-0">筛选</span>
+    <div x-data="datePicker({initDays: 14})" @date-change="summarySince = $event.detail; loadSummary()"></div>
+    <button type="button" @click="loadSummary">刷新</button>
+    <button type="button" x-show="!importFile" @click="triggerImport">从 clues.txt 导入</button>
+    <template x-if="importFile">
+      <div class="import-file-row">
+        <span class="color-primary import-file-name" x-text="importFile.name"></span>
+        <button type="button" class="btn-sm btn-danger" @click="cancelImport">取消</button>
+        <button type="button" class="btn-sm btn-primary shrink-0" @click="confirmImport">确认导入</button>
+      </div>
+    </template>
+    <input type="file" id="import-file" accept=".txt" hidden @change="onFileSelected($el)">
+    </div>
+  </div>
+
+  <!-- Loading skeleton -->
+  <div x-show="summaryLoading" class="skeleton-table">
+    <template x-for="i in 5" :key="i">
+      <div class="skeleton-row">
+        <div class="skeleton-cell" style="width:16%"></div>
+        <div class="skeleton-cell" style="width:10.5%"></div>
+        <div class="skeleton-cell" style="width:10.5%"></div>
+        <div class="skeleton-cell" style="width:10.5%"></div>
+        <div class="skeleton-cell" style="width:10.5%"></div>
+        <div class="skeleton-cell" style="width:10.5%"></div>
+        <div class="skeleton-cell" style="width:10.5%"></div>
+        <div class="skeleton-cell" style="width:10.5%"></div>
+        <div class="skeleton-cell" style="width:10.5%"></div>
+      </div>
+    </template>
+  </div>
+
+  <div class="overflow-auto section-mt" x-show="!summaryLoading">
+    <table id="summary-table">
+      <thead>
+        <tr>
+          <th class="sortable" :class="{'sort-active': summarySortCol === 'name'}" @click="setSort('name')">玩家 <span class="sort-arrows"><span class="sort-arrow-up" :style="{opacity: sortArrowUp('name', summarySortCol, summarySortDir)}">&#9650;</span><span class="sort-arrow-down" :style="{opacity: sortArrowDown('name', summarySortCol, summarySortDir)}">&#9660;</span></span></th>
+          <th class="sortable" :class="{'sort-active': summarySortCol === 'total'}" @click="setSort('total')">合计 <span class="sort-arrows"><span class="sort-arrow-up" :style="{opacity: sortArrowUp('total', summarySortCol, summarySortDir)}">&#9650;</span><span class="sort-arrow-down" :style="{opacity: sortArrowDown('total', summarySortCol, summarySortDir)}">&#9660;</span></span></th>
+          <template x-for="c in 7" :key="c">
+            <th class="sortable" :class="{'sort-active': summarySortCol === 'c'+c}" @click="setSort('c'+c)">
+              <img :src="'/static/clue' + c + '.webp'" class="clue-img" @error="e => e.target.replaceWith(c)" :alt="c">
+              <span class="sort-arrows"><span class="sort-arrow-up" :style="{opacity: sortArrowUp('c'+c, summarySortCol, summarySortDir)}">&#9650;</span><span class="sort-arrow-down" :style="{opacity: sortArrowDown('c'+c, summarySortCol, summarySortDir)}">&#9660;</span></span>
+            </th>
+          </template>
+        </tr>
+      </thead>
+      <tbody>
+        <template x-for="r in sortedSummary" :key="r.name">
+          <tr>
+            <td x-text="r.name"></td>
+            <td><strong x-text="fmtNum(r.total)" :class="{'text-pos': r.total > 0, 'text-neg': r.total < 0, 'text-zero': r.total === 0}"></strong></td>
+            <template x-for="c in 7" :key="c">
+              <td :class="{'text-pos': (r['c'+c]||0) > 0, 'text-neg': (r['c'+c]||0) < 0, 'text-zero': (r['c'+c]||0) === 0}" x-text="fmtNum(r['c'+c] || 0)"></td>
+            </template>
+          </tr>
+        </template>
+      </tbody>
+    </table>
+    <div x-show="!sortedSummary.length" class="empty-state">
+      <p>暂无记录</p>
+      <p>添加线索交易记录后将在此显示汇总</p>
+    </div>
+  </div>
+</section>
+
+<!-- ====== Tab: Advice ====== -->
+<section x-show="tab === 'advice'" x-cloak>
+  <div class="input-card">
+    <div class="input-row">
+      <div class="clue-bar">
+        <template x-for="n in 7" :key="n">
+          <div class="clue-bar-item" :class="{active: form.clues.includes(n)}" @click="toggleClue(n)">
+            <img :src="'/static/clue' + n + '.webp'" class="clue-img clue-img-pick" @error="e => e.target.replaceWith(n)" :alt="n">
+          </div>
+        </template>
+      </div>
+      <div class="autocomplete-wrap">
+        <input x-model="form.name" placeholder="玩家名 (拼音/首字母)" autocomplete="off" required
+               @input.debounce.150ms="autocomplete"
+               @focus="autocomplete"
+               @blur="setTimeout(() => acOpen = false, 150)"
+               @keydown.escape="acOpen = false">
+        <button type="button" class="search-clear" x-show="form.name" @click="form.name = ''; acOpen = false">&times;</button>
+        <div class="autocomplete-dropdown" x-show="acOpen" x-transition.opacity.scale.origin.top>
+          <div x-show="acLoading" class="ac-loading"><span class="spinner"></span></div>
+          <template x-for="n in acNames" :key="typeof n === 'string' ? n : n.name">
+            <div @click="pickPlayer(n)" style="display:flex;justify-content:space-between">
+              <span x-text="typeof n === 'string' ? n : n.name"></span>
+              <small class="color-muted" x-show="typeof n !== 'string'" x-text="n.score.toFixed(2)"></small>
+            </div>
+          </template>
+        </div>
+      </div>
+      <label class="check-label"><input type="checkbox" x-model="form.wasNew"> 补缺</label>
+      <div x-data="datePicker({initDays: 0})" @date-change="form.time = $event.detail"></div>
+      <div class="type-actions">
+        <button type="button" class="type-btn send" @click="submitRecord('+')">收到</button>
+        <button type="button" class="type-btn recv" @click="submitRecord('-')">送出</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="advice-row" style="justify-content:space-between;align-items:flex-start">
+    <div class="advice-col" style="flex:1;min-width:0">
+      <div x-show="adviceLoading">
+        <template x-for="i in 6" :key="i">
+          <div style="margin-bottom:16px">
+            <div class="skeleton-row" style="padding:0">
+              <div class="skeleton-cell" style="flex:1"></div>
+              <div class="skeleton-cell" style="width:60px"></div>
+            </div>
+            <div style="margin-top:8px">
+              <div class="skeleton-cell" style="width:100%;height:6px"></div>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <div x-show="!adviceLoading">
+        <template x-if="!adviceScores.length"><div class="empty-state"><p>暂无数据</p></div></template>
+        <div style="display:flex;align-items:center;gap:var(--space-1);margin-bottom:var(--space-4)">
+          <h4 x-text="'综合得分' + (adviceClue ? ' — 线索' + adviceClue : '')" style="margin:0"></h4>
+          <div style="position:relative" x-data="{show: false}"
+               @mouseenter="show = true" @mouseleave="show = false">
+            <span class="tip-icon">?</span>
+            <div class="tip-content" x-show="show" x-cloak
+                 x-html='(adviceClue
+                   ? "<div class=tip-formula>40%×缺口 + 25%×互惠 + 15%×活跃 + 10%×频率 + 10%×稀缺</div>"
+                   : "<div class=tip-formula>35%×互惠 + 30%×稀缺 + 20%×活跃 + 15%×频率</div>")
+                 + "<div class=tip-items><b>互惠</b> (收到-给出)/(收到+给出)，正数表示收大于出<br>"
+                 + "<b>稀缺</b> 送来你缺的线索数/收到数，送缺比例越高值越大<br>"
+                 + "<b>活跃</b> 距上次互动的时间衰减，近期互动过值更高<br>"
+                 + "<b>频率</b> 互动总次数归一化，来往越频繁值越高"
+                 + (adviceClue ? "<br><b>缺口</b> 该线索净亏损程度，缺口越大值越高" : "") + "</div>"'></div>
+          </div>
+        </div>
+        <template x-for="s in adviceScores.slice(0, 10)" :key="s.name">
+          <div class="advice-item">
+            <div class="score-bar-wrap-flat">
+              <div class="score-stats">
+                <strong x-text="s.name"></strong>
+                <div>
+                  <small x-show="s.clue_balance != null"
+                         :class="s.clue_balance >= 0 ? 'color-green' : 'color-red'"
+                         x-text="'(' + (s.clue_balance >= 0 ? '+' : '') + s.clue_balance + ')'"></small>
+                  <small x-text="s.score.toFixed(2)" class="color-primary score-value"></small>
+                </div>
+              </div>
+              <div class="score-bar-wrap"><div class="score-bar" :style="{width: Math.min(s.score * 100, 100) + '%'}"></div></div>
+            </div>
+            <small class="color-muted"
+                   x-text="'互惠: ' + s.reciprocity.toFixed(2) + '  稀缺: ' + s.scarcity.toFixed(2) + '  活跃: ' + s.activity.toFixed(2) + '  频率: ' + s.frequency.toFixed(2) + (s.need != null ? '  缺口: ' + s.need.toFixed(2) : '')"></small>
+          </div>
+        </template>
+      </div>
+    </div>
+    <div class="advice-col" style="flex-grow:0">
+      <div class="input-card" style="width:fit-content">
+        <div class="input-row">
+          <div class="clue-bar">
+            <div class="clue-bar-item" :class="{active: adviceClue === ''}" @click="adviceClue = ''; loadAdvice()">
+              <img src="/static/all.webp" class="clue-img-lg" @error="e => e.target.replaceWith('ALL')" alt="全部">
+            </div>
+            <template x-for="n in 7" :key="n">
+              <div class="clue-bar-item" :class="{active: adviceClue === String(n)}" @click="adviceClue = String(n); loadAdvice()">
+                <img :src="'/static/clue' + n + '.webp'" class="clue-img-lg" @error="e => e.target.replaceWith(n)" :alt="n">
+              </div>
+            </template>
+          </div>
+        </div>
+        <div class="input-row" style="margin-top:var(--space-3)">
+          <div x-data="datePicker({initDays: 14})" @date-change="adviceSince = $event.detail; loadAdvice()"></div>
+          <span class="weight-slider-group" x-show="adviceClue">
+            <small class="color-muted">专项</small>
+            <div style="position:relative;flex:1;min-width:80px" x-data="{sf: false}"
+                 @mouseenter="sf = true" @mouseleave="sf = false">
+              <input type="range" min="0" max="100" step="10" class="weight-range"
+                     :value="adviceWeight * 100"
+                     :style="'--pct:' + (adviceWeight * 100) + '%'"
+                     @input="adviceWeight = $el.value / 100"
+                     @input.debounce.300ms="loadAdvice()">
+              <small class="slider-float" x-show="sf" x-cloak
+                     x-text="Math.round(adviceWeight * 100) + '%'"
+                     :style="'left:' + (adviceWeight * 100) + '%'"></small>
+            </div>
+            <small class="color-muted">综合</small>
+          </span>
+        </div>
+    </div>
+    </div>
+  </div>
+</section>
+
+<!-- ====== Tab: History ====== -->
+<section x-show="tab === 'history'" x-cloak>
+  <div class="input-card">
+    <div class="input-row">
+      <div class="clue-bar">
+        <template x-for="n in 7" :key="n">
+          <div class="clue-bar-item" :class="{active: historyClues.includes(n)}" @click="toggleHistoryClue(n)">
+            <img :src="'/static/clue' + n + '.webp'" class="clue-img-lg" @error="e => e.target.replaceWith(n)" :alt="n">
+          </div>
+        </template>
+      </div>
+      <div class="autocomplete-wrap">
+        <input x-model="historySearch" placeholder="玩家名 (拼音/首字母)" autocomplete="off"
+               @input.debounce.300ms="historyPage = 1; loadHistory()"
+               @input.debounce.150ms="historyAutocomplete"
+               @focus="historyAutocomplete"
+               @blur="setTimeout(() => historyAcOpen = false, 150)"
+               @keydown.escape="historyAcOpen = false">
+        <button type="button" class="search-clear" x-show="historySearch" @click="historySearch = ''; historyAcOpen = false; historyPage = 1; loadHistory()">&times;</button>
+        <div class="autocomplete-dropdown" x-show="historyAcOpen" x-transition.opacity.scale.origin.top>
+          <div x-show="historyAcLoading" class="ac-loading"><span class="spinner"></span></div>
+          <template x-for="n in historyAcNames" :key="typeof n === 'string' ? n : n.name">
+            <div @click="pickHistoryPlayer(n)" style="display:flex;justify-content:space-between">
+              <span x-text="typeof n === 'string' ? n : n.name"></span>
+              <small class="color-muted" x-show="typeof n !== 'string'" x-text="n.score.toFixed(2)"></small>
+            </div>
+          </template>
+        </div>
+      </div>
+      <div x-data="datePicker({initDays: -1})" @date-change="historySince = $event.detail; historyPage = 1; loadHistory()"></div>
+    </div>
+  </div>
+
+  <!-- Loading skeleton -->
+  <div x-show="historyLoading" class="skeleton-table">
+    <template x-for="i in 8" :key="i">
+      <div class="skeleton-row">
+        <div class="skeleton-cell" style="width:25%"></div>
+        <div class="skeleton-cell" style="width:20%"></div>
+        <div class="skeleton-cell" style="width:15%"></div>
+        <div class="skeleton-cell" style="width:10%"></div>
+        <div class="skeleton-cell" style="width:10%"></div>
+        <div class="skeleton-cell" style="width:10%"></div>
+      </div>
+    </template>
+  </div>
+
+  <div class="overflow-auto" x-show="!historyLoading">
+    <table id="history-table">
+      <thead><tr>
+        <th class="sortable" :class="{'sort-active': historySortCol === 'time'}" @click="setHistorySort('time')">时间 <span class="sort-arrows"><span class="sort-arrow-up" :style="{opacity: sortArrowUp('time', historySortCol, historySortDir)}">&#9650;</span><span class="sort-arrow-down" :style="{opacity: sortArrowDown('time', historySortCol, historySortDir)}">&#9660;</span></span></th>
+        <th class="sortable" :class="{'sort-active': historySortCol === 'name'}" @click="setHistorySort('name')">玩家 <span class="sort-arrows"><span class="sort-arrow-up" :style="{opacity: sortArrowUp('name', historySortCol, historySortDir)}">&#9650;</span><span class="sort-arrow-down" :style="{opacity: sortArrowDown('name', historySortCol, historySortDir)}">&#9660;</span></span></th>
+        <th class="sortable" :class="{'sort-active': historySortCol === 'clue'}" @click="setHistorySort('clue')">线索 <span class="sort-arrows"><span class="sort-arrow-up" :style="{opacity: sortArrowUp('clue', historySortCol, historySortDir)}">&#9650;</span><span class="sort-arrow-down" :style="{opacity: sortArrowDown('clue', historySortCol, historySortDir)}">&#9660;</span></span></th>
+        <th>+/-</th><th>补缺</th><th>操作</th>
+      </tr></thead>
+      <tbody>
+        <template x-for="r in historyData" :key="r.id">
+          <tr :class="{'history-row deleting': r._deleting}">
+            <td x-text="fmtTime(r.time)"></td>
+            <td x-text="r.name"></td>
+            <td>
+              <img :src="'/static/clue' + r.clue + '.webp'" class="clue-img-sm" @error="e => e.target.replaceWith(r.clue)" :alt="r.clue">
+            </td>
+            <td><span :class="r.type === '+' ? 'plus' : 'minus'" x-text="r.type"></span></td>
+            <td x-text="r.was_new ? '✓' : ''"></td>
+            <td>
+              <button class="toggle-patch" @click="toggleWasNew(r)" style="margin-right:12px">切换补缺</button>
+              <button class="link-del" @click="confirmDelRecord(r)">删除</button>
+            </td>
+          </tr>
+        </template>
+      </tbody>
+    </table>
+    <div x-show="!historyData.length" class="empty-state">
+      <p>无匹配记录</p>
+    </div>
+  </div>
+  <div class="pagination" x-show="!historyLoading">
+    <button type="button" @click="historyPrevPage()" :disabled="historyPage <= 1">上一页</button>
+    <span x-text="'第 ' + historyPage + ' / ' + historyTotalPages + ' 页 (共 ' + historyTotal + ' 条)'"></span>
+    <button type="button" @click="historyNextPage()" :disabled="historyPage >= historyTotalPages">下一页</button>
+  </div>
+</section>
+
+</main>
+
+<!-- ====== Confirm Modal ====== -->
+<div class="modal-overlay" x-show="confirmModal.show" x-transition.opacity @click.self="confirmModal.show = false" @keydown.escape.window="confirmModal.show = false" x-cloak>
+  <div class="modal" x-transition.scale>
+    <div class="modal-header" x-text="confirmModal.title"></div>
+    <div class="modal-body" x-text="confirmModal.message"></div>
+    <div class="modal-footer">
+      <button type="button" @click="confirmModal.show = false">取消</button>
+      <button type="button" :class="confirmModal.confirmClass || 'btn-danger'" @click="confirmModal.onConfirm(); confirmModal.show = false" x-text="confirmModal.confirmText"></button>
+    </div>
+  </div>
+</div>
+
+<!-- ====== Date Picker Template ====== -->
+<template id="date-picker-tpl">
+  <div class="date-pick-wrap">
+    <div class="date-pick-trigger" @click="open = !open">
+      <span x-text="label"></span><span class="date-pick-arrow">&#9660;</span>
+    </div>
+    <div class="date-pick-panel" :class="{open: open}" x-show="open" x-transition.opacity.scale.origin.top @click.outside="open = false">
+      <div class="date-pick-actions">
+        <button type="button" :class="{active: offset === 0}" @click="select(0)">今天</button>
+        <button type="button" :class="{active: offset === 7}" @click="select(7)">1周</button>
+        <button type="button" :class="{active: offset === 14}" @click="select(14)">2周</button>
+        <button type="button" :class="{active: offset === 21}" @click="select(21)">3周</button>
+        <button type="button" :class="{active: offset === 30}" @click="select(30)">1月</button>
+        <button type="button" @click="clear()">清除</button>
+      </div>
+      <input type="date" x-model="value" @change="onCustom()" class="w-full">
+    </div>
+  </div>
+</template>
+
+<script src="/static/components/date-picker.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
